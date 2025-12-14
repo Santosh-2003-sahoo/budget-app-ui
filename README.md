@@ -1,50 +1,82 @@
-# Welcome to your Expo app 👋
+# Budget App 📊
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Welcome to the **Budget App**, a modern and intuitive application for managing your finances. This app is built using [Expo](https://expo.dev) and React Native, providing a seamless experience across Android and iOS platforms.
 
-## Get started
+---
 
-1. Install dependencies
+## App Screenshots 📸
+
+Here are some screenshots of the app:
+
+| Home Screen | Transactions | Statistics |
+|-------------|--------------|------------|
+| ![Home Screen](assets/images/homepage.jpg) | ![Transactions](assets/images/AddTransaction.jpg) | ![Statistics](assets/images/statspage.jpg) |
+| Accounts Page | Add Account | Self Transfer |
+|--------------|-------------|---------------|
+| ![Accounts Page](assets/images/accountspage.jpg) | ![Add Account](assets/images/AddAccount.jpg) | ![Self Transfer](assets/images/SelfTranser.jpg) |
+
+---
+
+## Features ✨
+
+- **Track Expenses and Income**: Categorize your transactions and monitor your financial health.
+- **Visual Insights**: Get detailed statistics and charts for better decision-making.
+- **Multi-Account Support**: Manage multiple accounts effortlessly.
+- **Customizable Categories**: Add and edit categories to suit your needs.
+- **Secure and Private**: Your data stays on your device.
+
+---
+
+## Getting Started 🚀
+
+Follow these steps to set up and run the app:
+
+1. **Install Dependencies**:
 
    ```bash
    npm install
    ```
 
-2. Start the app
+2. **Start the App**:
 
    ```bash
    npx expo start
    ```
 
-In the output, you'll find options to open the app in a
+   You can open the app in:
+   - [Development Build](https://docs.expo.dev/develop/development-builds/introduction/)
+   - [Android Emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
+   - [iOS Simulator](https://docs.expo.dev/workflow/ios-simulator/)
+   - [Expo Go](https://expo.dev/go)
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+3. **Reset the Project** (Optional):
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+   If you want to start fresh:
 
-## Get a fresh project
+   ```bash
+   npm run reset-project
+   ```
 
-When you're ready, run:
+---
 
-```bash
-npm run reset-project
-```
+## Learn More 📚
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+To learn more about developing with Expo, check out:
 
-## Learn more
+- [Expo Documentation](https://docs.expo.dev/): Comprehensive guides and tutorials.
+- [Learn Expo Tutorial](https://docs.expo.dev/tutorial/introduction/): A step-by-step tutorial for beginners.
 
-To learn more about developing your project with Expo, look at the following resources:
+---
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Community 🌍
 
-## Join the community
+Join the Expo community to connect with other developers:
 
-Join our community of developers creating universal apps.
+- [Expo on GitHub](https://github.com/expo/expo): Contribute to the platform.
+- [Discord Community](https://chat.expo.dev): Ask questions and share knowledge.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+---
+
+## License 📜
+
+This project is licensed under the MIT License. See the LICENSE file for details.
