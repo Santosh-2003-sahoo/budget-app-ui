@@ -88,6 +88,9 @@ export default function StatsScreen() {
       base = transactions;
     }
 
+    // exclude transfers from statistics entirely
+    base = base.filter((tx) => tx.source !== "transfer");
+
     if (txType === "expense") {
       return base.filter((tx) => tx.amount < 0);
     } else {

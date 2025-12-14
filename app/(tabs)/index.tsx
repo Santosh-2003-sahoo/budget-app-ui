@@ -14,6 +14,8 @@ import {
 import axios from "axios";
 import { API_BASE } from "../../constants/api";
 import { Ionicons } from "@expo/vector-icons";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
+
 
 const TABS = ["Daily", "Monthly", "Calendar", "Total"];
 
@@ -38,8 +40,12 @@ function groupByDay(transactions: any[]) {
       };
     }
 
-    if (tx.amount > 0) groups[txDate].income += tx.amount;
-    else groups[txDate].expense += Math.abs(tx.amount);
+    // **Important**: keep the tx in the list (so transfers are visible),
+    // but **do not** include transfers in income/expense sums.
+    if (tx.source !== "transfer") {
+      if (tx.amount > 0) groups[txDate].income += tx.amount;
+      else groups[txDate].expense += Math.abs(tx.amount);
+    }
 
     groups[txDate].list.push(tx);
   });
@@ -70,8 +76,12 @@ function groupByMonth(transactions: any[]) {
       };
     }
 
-    if (tx.amount > 0) groups[key].income += tx.amount;
-    else groups[key].expense += Math.abs(tx.amount);
+    // Exclude transfers from monthly income/expense totals,
+    // but keep the tx in the list for display.
+    if (tx.source !== "transfer") {
+      if (tx.amount > 0) groups[key].income += tx.amount;
+      else groups[key].expense += Math.abs(tx.amount);
+    }
 
     groups[key].list.push(tx);
   });
@@ -147,7 +157,11 @@ const EXPENSE_CATEGORIES = [
   "Others",
 ];
 
-const INCOME_CATEGORIES = ["💸Salary", "💰Payback", "🫰🏻Profit", "💳Cashback"];
+const INCOME_CATEGORIES = ["💸Salary", "💰Payback", "🫰🏻Profit", "💳Cashback", "Others"];
+
+const ALL_CATEGORIES = Array.from(
+  new Set([...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES])
+);
 
 // -------- Main Component --------
 
@@ -174,16 +188,17 @@ export default function TransactionsScreen() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   const [accounts, setAccounts] = useState<any[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
-    null
-  );
-  const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(
-    null
-  );
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [deleteCandidateId, setDeleteCandidateId] = useState<string | null>(null);
+
+  type FilterMode = "none" | "account" | "category";
+
+  const [filterMode, setFilterMode] = useState<FilterMode>("none");
+  const [filterAccountId, setFilterAccountId] = useState<string | null>(null);
+  const [filterCategory, setFilterCategory] = useState<string | null>(null);
 
   const accountMap = useMemo(() => {
-    const map: Record<string, { name: string; type?: string; currency?: string }> =
-      {};
+    const map: Record<string, { name: string; type?: string; currency?: string }> = {};
     accounts.forEach((acc: any) => {
       if (acc.id) {
         map[acc.id] = {
@@ -222,6 +237,10 @@ export default function TransactionsScreen() {
   };
 
   useEffect(() => {
+    axios.get(`${API_BASE}/`);
+  }, []);
+
+  useEffect(() => {
     fetchTransactions();
     fetchAccounts();
   }, []);
@@ -249,20 +268,32 @@ export default function TransactionsScreen() {
   }, [accounts, selectedAccountId]);
 
   // -------- Derived data --------
+  // #change-filter central filtered base
+  const filteredTxBase = useMemo(() => {
+    let base = transactions;
 
+    if (filterMode === "account" && filterAccountId) {
+      base = base.filter((tx) => tx.account_id === filterAccountId);
+    }
+
+    if (filterMode === "category" && filterCategory) {
+      base = base.filter((tx) => tx.category === filterCategory);
+    }
+
+    return base;
+  }, [transactions, filterMode, filterAccountId, filterCategory]);
+
+  // #change-filter applied
   const currentMonthTx = useMemo(() => {
     const [y, m] = month.split("-");
-    return transactions.filter((tx) => {
+    return filteredTxBase.filter((tx) => {
       if (!tx.timestamp) return false;
       const [dy, dm] = tx.timestamp.split("T")[0].split("-");
       return dy === y && dm === m;
     });
-  }, [transactions, month]);
+  }, [filteredTxBase, month]);
 
-  const groupedDaily = useMemo(
-    () => groupByDay(currentMonthTx),
-    [currentMonthTx]
-  );
+  const groupedDaily = useMemo(() => groupByDay(currentMonthTx), [currentMonthTx]);
 
   const calendarMatrix = useMemo(() => {
     const [y, m] = month.split("-");
@@ -270,29 +301,26 @@ export default function TransactionsScreen() {
   }, [month]);
 
   const groupedMonthlyAll = useMemo(
-    () => groupByMonth(transactions),
-    [transactions]
+    () => groupByMonth(filteredTxBase),
+    [filteredTxBase]
   );
 
   const yearMonthlyGroups = useMemo(
-    () =>
-      groupedMonthlyAll.filter((g) =>
-        g.key.startsWith(String(viewYear) + "-")
-      ),
+    () => groupedMonthlyAll.filter((g) => g.key.startsWith(String(viewYear) + "-")),
     [groupedMonthlyAll, viewYear]
   );
 
   // Total tab: all transactions up to end of selected month
   const filteredTotalTx = useMemo(() => {
     const [y, m] = month.split("-");
-    const endOfMonth = new Date(Number(y), Number(m), 0); // last day of month
-    return transactions.filter((tx) => {
+    const endOfMonth = new Date(Number(y), Number(m), 0);
+
+    return filteredTxBase.filter((tx) => {
       if (!tx.timestamp) return false;
-      const datePart = tx.timestamp.split("T")[0];
-      const d = new Date(datePart);
+      const d = new Date(tx.timestamp.split("T")[0]);
       return d.getTime() <= endOfMonth.getTime();
     });
-  }, [transactions, month]);
+  }, [filteredTxBase, month]);
 
   // summary row – depends on tab (Total uses filteredTotalTx)
   const { summaryIncome, summaryExpense, summaryTotal } = useMemo(() => {
@@ -300,17 +328,22 @@ export default function TransactionsScreen() {
     let exp = 0;
 
     if (selectedTab === "Monthly") {
+      // groupedMonthlyAll already excludes transfers when computing income/expense
       yearMonthlyGroups.forEach((g) => {
         inc += g.income;
         exp += g.expense;
       });
     } else if (selectedTab === "Total") {
+      // make sure to skip transfers when summing totals
       filteredTotalTx.forEach((tx) => {
+        if (tx.source === "transfer") return;
         if (tx.amount > 0) inc += tx.amount;
         else exp += Math.abs(tx.amount);
       });
     } else {
+      // Daily (current month): skip transfers for sums
       currentMonthTx.forEach((tx) => {
+        if (tx.source === "transfer") return;
         if (tx.amount > 0) inc += tx.amount;
         else exp += Math.abs(tx.amount);
       });
@@ -324,56 +357,35 @@ export default function TransactionsScreen() {
   function prevMonth() {
     const [y, m] = month.split("-");
     const date = new Date(Number(y), Number(m) - 2);
-    setMonth(
-      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    );
+    setMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
   }
 
   function nextMonth() {
     const [y, m] = month.split("-");
     const date = new Date(Number(y), Number(m));
-    setMonth(
-      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    );
+    setMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
   }
 
   const prevYear = () => setViewYear((y) => y - 1);
   const nextYear = () => setViewYear((y) => y + 1);
 
-  const currentCategories =
-    formType === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
+  const currentCategories = formType === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
 
   // -------- Transaction Card (reference-style layout) --------
-  const TxItem = ({
-    item,
-    showDate = false,
-  }: {
-    item: any;
-    showDate?: boolean;
-  }) => {
+  const TxItem = ({ item, showDate = false }: { item: any; showDate?: boolean }) => {
     const isDeleteMode = deleteCandidateId === item.id;
 
     let dateLabel = "";
     if (showDate && item.timestamp) {
       const d = new Date(item.timestamp);
-      dateLabel = d.toLocaleDateString("en-IN", {
-        day: "2-digit",
-        month: "short",
-        year: "2-digit",
-      });
+      dateLabel = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" });
     }
 
     const isExpense = item.amount < 0;
 
-    const accInfo = item.account_id
-      ? accountMap[item.account_id]
-      : undefined;
+    const accInfo = item.account_id ? accountMap[item.account_id] : undefined;
 
-    const accountLabel = accInfo
-      ? accInfo.type
-        ? `${accInfo.name}`
-        : accInfo.name
-      : null;
+    const accountLabel = accInfo ? (accInfo.type ? `${accInfo.name}` : accInfo.name) : null;
 
     const handleLongPress = () => {
       // toggle delete mode for this card
@@ -390,19 +402,13 @@ export default function TransactionsScreen() {
     // If in delete mode, show red glassy delete state
     if (isDeleteMode) {
       return (
-        <TouchableOpacity
-          activeOpacity={0.9}
-          onPress={handlePress}
-          onLongPress={handleLongPress}
-        >
+        <TouchableOpacity activeOpacity={0.9} onPress={handlePress} onLongPress={handleLongPress}>
           <View style={styles.cardWrapper}>
             <View style={[styles.cardAccent, styles.cardAccentDelete]} />
             <View style={[styles.card, styles.cardDelete]}>
               <View style={{ flex: 1, alignItems: "center" }}>
                 <Ionicons name="trash" size={20} color="#fff" />
-                <Text style={styles.deleteSub}>
-                  Tap again to confirm
-                </Text>
+                <Text style={styles.deleteSub}>Tap again to confirm</Text>
               </View>
             </View>
           </View>
@@ -412,18 +418,9 @@ export default function TransactionsScreen() {
 
     // Normal non-delete card
     return (
-      <TouchableOpacity
-        activeOpacity={0.8}
-        onLongPress={handleLongPress}
-        onPress={handlePress}
-      >
+      <TouchableOpacity activeOpacity={0.8} onLongPress={handleLongPress} onPress={handlePress}>
         <View style={styles.cardWrapper}>
-          <View
-            style={[
-              styles.cardAccent,
-              { backgroundColor: isExpense ? "#fb7185" : "#34d399" },
-            ]}
-          />
+          <View style={[styles.cardAccent, { backgroundColor: isExpense ? "#fb7185" : "#34d399" }]} />
           <View style={styles.card}>
             {/* LEFT: Category (with emoji) */}
             <View style={styles.cardLeft}>
@@ -432,40 +429,20 @@ export default function TransactionsScreen() {
 
             {/* MIDDLE: Description + account + optional date */}
             <View style={styles.cardCenter}>
-              {item.description ? (
-                <Text style={styles.desc} numberOfLines={1}>
-                  {item.description}
-                </Text>
-              ) : (
-                <Text style={styles.descPlaceholder}>—</Text>
-              )}
-              {accountLabel && (
-                <Text style={styles.accountLabel} numberOfLines={1}>
-                  {accountLabel}
-                </Text>
-              )}
-              {showDate && dateLabel ? (
-                <Text style={styles.cardDate}>{dateLabel}</Text>
-              ) : null}
+              {item.description ? <Text style={styles.desc} numberOfLines={1}>{item.description}</Text> : <Text style={styles.descPlaceholder}>—</Text>}
+              {accountLabel && <Text style={styles.accountLabel} numberOfLines={1}>{accountLabel}</Text>}
+              {showDate && dateLabel ? <Text style={styles.cardDate}>{dateLabel}</Text> : null}
             </View>
 
             {/* RIGHT: Amount */}
             <View style={styles.cardRight}>
-              <Text
-                style={[
-                  styles.amount,
-                  { color: isExpense ? "#fb7185" : "#6ee7b7" },
-                ]}
-              >
-                ₹{Math.abs(item.amount)}
-              </Text>
+              <Text style={[styles.amount, { color: isExpense ? "#fb7185" : "#6ee7b7" }]}>₹{Math.abs(item.amount)}</Text>
             </View>
           </View>
         </View>
       </TouchableOpacity>
     );
   };
-
 
   // -------- Daily Renderer (with pill date header) --------
   const renderDailyGroup = ({ item }: { item: any }) => (
@@ -474,9 +451,7 @@ export default function TransactionsScreen() {
         <View style={styles.dayHeaderPill}>
           <Text style={styles.dayHeaderDateText}>{formatDay(item.date)}</Text>
         </View>
-        <Text style={styles.dayAmount}>
-          ₹{(item.income - item.expense).toFixed(2)}
-        </Text>
+        <Text style={styles.dayAmount}>₹{(item.income - item.expense).toFixed(2)}</Text>
       </View>
 
       {item.list.map((tx: any) => (
@@ -490,13 +465,9 @@ export default function TransactionsScreen() {
     <View style={{ marginBottom: 18 }}>
       <View style={styles.monthGroupHeader}>
         <View style={styles.monthGroupPill}>
-          <Text style={styles.monthGroupText}>
-            {formatMonthFromKey(item.key)}
-          </Text>
+          <Text style={styles.monthGroupText}>{formatMonthFromKey(item.key)}</Text>
         </View>
-        <Text style={styles.monthGroupAmount}>
-          ₹{(item.income - item.expense).toFixed(2)}
-        </Text>
+        <Text style={styles.monthGroupAmount}>₹{(item.income - item.expense).toFixed(2)}</Text>
       </View>
 
       {item.list.map((tx: any) => (
@@ -521,13 +492,9 @@ export default function TransactionsScreen() {
     }
 
     // pick account: selectedAccountId -> first account -> DEFAULT_ACCOUNT_ID
-    const fallbackAccountId =
-      selectedAccountId ||
-      (accounts.length > 0 ? accounts[0].id : null) ||
-      DEFAULT_ACCOUNT_ID;
+    const fallbackAccountId = selectedAccountId || (accounts.length > 0 ? accounts[0].id : null) || DEFAULT_ACCOUNT_ID;
 
-    const accObj =
-      accounts.find((a: any) => a.id === fallbackAccountId) || null;
+    const accObj = accounts.find((a: any) => a.id === fallbackAccountId) || null;
 
     const currency = accObj?.currency || DEFAULT_CURRENCY;
 
@@ -546,8 +513,7 @@ export default function TransactionsScreen() {
     );
     const finalTimestamp = dateObj.toISOString();
 
-    const finalAmount =
-      formType === "expense" ? -Math.abs(amountNum) : Math.abs(amountNum);
+    const finalAmount = formType === "expense" ? -Math.abs(amountNum) : Math.abs(amountNum);
 
     const payload = {
       account_id: fallbackAccountId,
@@ -563,7 +529,15 @@ export default function TransactionsScreen() {
     try {
       setSaving(true);
       await axios.post(`${API_BASE}/transactions`, payload);
+
+      // refresh local lists
       fetchTransactions();
+      // also trigger other screens to refresh if they have hooks
+      if ((globalThis as any).__refreshTransactions) (globalThis as any).__refreshTransactions();
+      if ((globalThis as any).__refreshTX) (globalThis as any).__refreshTX();
+      if ((globalThis as any).__refreshAccounts) (globalThis as any).__refreshAccounts();
+      if ((globalThis as any).__refreshStats) (globalThis as any).__refreshStats();
+
       setFormAmount("");
       setFormCategory("");
       setFormDescription("");
@@ -598,50 +572,35 @@ export default function TransactionsScreen() {
 
   const handleDeleteTransaction = async (id: string) => {
     try {
-      // optional: you can show some loading state if you want
       await axios.delete(`${API_BASE}/transactions/${id}`);
 
-      // remove from main list
+      // local removal
       setTransactions((prev) => prev.filter((tx) => tx.id !== id));
-
-      // also remove from selected-day modal list if it's open
       setSelectedDateTx((prev) => prev.filter((tx) => tx.id !== id));
-
-      // clear delete mode
       setDeleteCandidateId(null);
+
+      // notify other screens & refresh accounts/stats
+      if ((globalThis as any).__refreshTransactions) (globalThis as any).__refreshTransactions();
+      if ((globalThis as any).__refreshTX) (globalThis as any).__refreshTX();
+      if ((globalThis as any).__refreshAccounts) (globalThis as any).__refreshAccounts();
+      if ((globalThis as any).__refreshStats) (globalThis as any).__refreshStats();
     } catch (err) {
       console.log("Delete TX error", err);
-      // you can reuse saveError if you want to show message
-      // setSaveError("Failed to delete transaction.");
+      // optionally show an error message
     }
   };
-
 
   return (
     <View style={styles.container}>
       {/* -------- DATE MODAL -------- */}
-      <Modal
-        visible={modalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setModalVisible(false)}
-      >
+      <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalHeader}>
-              {selectedDate ? formatDay(selectedDate) : ""}
-            </Text>
+            <Text style={styles.modalHeader}>{selectedDate ? formatDay(selectedDate) : ""}</Text>
 
-            <FlatList
-              data={selectedDateTx}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => <TxItem item={item} />}
-            />
+            <FlatList data={selectedDateTx} keyExtractor={(item) => item.id} renderItem={({ item }) => <TxItem item={item} />} />
 
-            <TouchableOpacity
-              style={styles.closeBtn}
-              onPress={() => setModalVisible(false)}
-            >
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setModalVisible(false)}>
               <Text style={styles.closeText}>Close</Text>
             </TouchableOpacity>
           </View>
@@ -649,204 +608,95 @@ export default function TransactionsScreen() {
       </Modal>
 
       {/* -------- ADD TRANSACTION MODAL -------- */}
-    <Modal
-      visible={addModalVisible}
-      transparent
-      animationType="slide"
-      onRequestClose={handleCancelAdd}
-    >
-      <View style={styles.modalOverlay}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={{ flex: 1, justifyContent: "flex-end" }}
-        >
-          <View style={styles.addModalContentAuto}>
-            <Text style={styles.modalHeader}>Add Transaction</Text>
+      <Modal visible={addModalVisible} transparent animationType="slide" onRequestClose={handleCancelAdd}>
+        <View style={styles.modalOverlay}>
+          <KeyboardAwareScrollView
+            contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+            enableOnAndroid
+            extraScrollHeight={20} // Adjust this value as needed
+            keyboardOpeningTime={0}
+          > 
+            <View style={styles.addModalContentAuto}>
+              <Text style={styles.modalHeader}>Add Transaction</Text>
 
-            {/* ---- NO SCROLL VIEW, natural height grows ---- */}
-            
-            {/* Type toggle */}
-            <View style={styles.typeRow}>
-              <TouchableOpacity
-                style={[
-                  styles.typeChip,
-                  formType === "expense" && styles.typeChipActiveExpense,
-                ]}
-                onPress={() => {
-                  setFormType("expense");
-                  setSelectedCategory(null);
-                  setFormCategory("");
-                }}
-              >
-                <Text
-                  style={[
-                    styles.typeChipText,
-                    formType === "expense" && styles.typeChipTextActive,
-                  ]}
-                >
-                  Expense
-                </Text>
-              </TouchableOpacity>
+              {/* Type toggle */}
+              <View style={styles.typeRow}>
+                <TouchableOpacity style={[styles.typeChip, formType === "expense" && styles.typeChipActiveExpense]} onPress={() => { setFormType("expense"); setSelectedCategory(null); setFormCategory(""); }}>
+                  <Text style={[styles.typeChipText, formType === "expense" && styles.typeChipTextActive]}>Expense</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[
-                  styles.typeChip,
-                  formType === "income" && styles.typeChipActiveIncome,
-                ]}
-                onPress={() => {
-                  setFormType("income");
-                  setSelectedCategory(null);
-                  setFormCategory("");
-                }}
-              >
-                <Text
-                  style={[
-                    styles.typeChipText,
-                    formType === "income" && styles.typeChipTextActive,
-                  ]}
-                >
-                  Income
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Date */}
-            <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Date</Text>
-              <View style={styles.dateRow}>
-                <TextInput
-                  style={[styles.input, { flex: 1 }]}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#6b7280"
-                  value={formDate}
-                  onChangeText={setFormDate}
-                />
-                <TouchableOpacity
-                  style={styles.todayChip}
-                  onPress={() => setFormDate(getTodayDateString())}
-                >
-                  <Text style={styles.todayChipText}>Today</Text>
+                <TouchableOpacity style={[styles.typeChip, formType === "income" && styles.typeChipActiveIncome]} onPress={() => { setFormType("income"); setSelectedCategory(null); setFormCategory(""); }}>
+                  <Text style={[styles.typeChipText, formType === "income" && styles.typeChipTextActive]}>Income</Text>
                 </TouchableOpacity>
               </View>
-              <Text style={styles.dateHint}>Format: YYYY-MM-DD</Text>
-            </View>
 
-            {/* Account */}
-            <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Account</Text>
-              <View style={styles.accountChipRow}>
-                {accounts.map((acc: any) => (
-                  <TouchableOpacity
-                    key={acc.id}
-                    style={[
-                      styles.accountChip,
-                      selectedAccountId === acc.id && styles.accountChipActive,
-                    ]}
-                    onPress={() => setSelectedAccountId(acc.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.accountChipText,
-                        selectedAccountId === acc.id &&
-                          styles.accountChipTextActive,
-                      ]}
-                    >
-                      {acc.name}
-                    </Text>
+              {/* Date */}
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Date</Text>
+                <View style={styles.dateRow}>
+                  <TextInput style={[styles.input, { flex: 1 }]} placeholder="YYYY-MM-DD" placeholderTextColor="#6b7280" value={formDate} onChangeText={setFormDate} />
+                  <TouchableOpacity style={styles.todayChip} onPress={() => setFormDate(getTodayDateString())}>
+                    <Text style={styles.todayChipText}>Today</Text>
                   </TouchableOpacity>
-                ))}
+                </View>
+                <Text style={styles.dateHint}>Format: YYYY-MM-DD</Text>
+              </View>
+
+              {/* Account */}
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Account</Text>
+                <View style={styles.accountChipRow}>
+                  {accounts.map((acc: any) => (
+                    <TouchableOpacity key={acc.id} style={[styles.accountChip, selectedAccountId === acc.id && styles.accountChipActive]} onPress={() => setSelectedAccountId(acc.id)}>
+                      <Text style={[styles.accountChipText, selectedAccountId === acc.id && styles.accountChipTextActive]}>{acc.name}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Amount */}
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Amount (₹)</Text>
+                <TextInput style={styles.input} keyboardType="numeric" placeholder="e.g. 400" placeholderTextColor="#6b7280" value={formAmount} onChangeText={setFormAmount} />
+              </View>
+
+              {/* Category */}
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Category</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChipsRow}>
+                  {currentCategories.map((cat) => {
+                    const isActive = selectedCategory === cat;
+                    return (
+                      <TouchableOpacity key={cat} style={[styles.categoryChip, isActive && styles.categoryChipActive]} onPress={() => { setSelectedCategory(cat); setFormCategory(cat); }}>
+                        <Text style={[styles.categoryChipText, isActive && styles.categoryChipTextActive]}>{cat}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              {/* Description */}
+              <View style={styles.fieldBlock}>
+                <Text style={styles.fieldLabel}>Description</Text>
+                <TextInput style={[styles.input, { height: 70, textAlignVertical: "top" }]} multiline placeholder="Optional note" placeholderTextColor="#6b7280" value={formDescription} onChangeText={setFormDescription} />
+              </View>
+
+              {saveError && <Text style={styles.errorText}>{saveError}</Text>}
+
+              {/* Buttons */}
+              <View style={styles.addButtonsRow}>
+                <TouchableOpacity style={[styles.addButton, styles.addCancelButton]} onPress={handleCancelAdd} disabled={saving}>
+                  <Text style={styles.addButtonText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={[styles.addButton, styles.addSaveButton]} onPress={handleSaveTransaction} disabled={saving}>
+                  <Text style={styles.addButtonText}>{saving ? "Saving..." : "Save"}</Text>
+                </TouchableOpacity>
               </View>
             </View>
-
-            {/* Amount */}
-            <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Amount (₹)</Text>
-              <TextInput
-                style={styles.input}
-                keyboardType="numeric"
-                placeholder="e.g. 400"
-                placeholderTextColor="#6b7280"
-                value={formAmount}
-                onChangeText={setFormAmount}
-              />
-            </View>
-
-            {/* Category */}
-            <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Category</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.categoryChipsRow}
-              >
-                {currentCategories.map((cat) => {
-                  const isActive = selectedCategory === cat;
-                  return (
-                    <TouchableOpacity
-                      key={cat}
-                      style={[
-                        styles.categoryChip,
-                        isActive && styles.categoryChipActive,
-                      ]}
-                      onPress={() => {
-                        setSelectedCategory(cat);
-                        setFormCategory(cat);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.categoryChipText,
-                          isActive && styles.categoryChipTextActive,
-                        ]}
-                      >
-                        {cat}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-
-
-            {/* Description */}
-            <View style={styles.fieldBlock}>
-              <Text style={styles.fieldLabel}>Description</Text>
-              <TextInput
-                style={[styles.input, { height: 70, textAlignVertical: "top" }]}
-                multiline
-                placeholder="Optional note"
-                placeholderTextColor="#6b7280"
-                value={formDescription}
-                onChangeText={setFormDescription}
-              />
-            </View>
-
-            {saveError && <Text style={styles.errorText}>{saveError}</Text>}
-
-            {/* Buttons */}
-            <View style={styles.addButtonsRow}>
-              <TouchableOpacity
-                style={[styles.addButton, styles.addCancelButton]}
-                onPress={handleCancelAdd}
-                disabled={saving}
-              >
-                <Text style={styles.addButtonText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.addButton, styles.addSaveButton]}
-                onPress={handleSaveTransaction}
-                disabled={saving}
-              >
-                <Text style={styles.addButtonText}>
-                  {saving ? "Saving..." : "Save"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </View>
-    </Modal>
+          </KeyboardAwareScrollView>
+        </View>
+      </Modal>
 
       {/* -------- Header (Month vs Year) -------- */}
       {selectedTab === "Monthly" ? (
@@ -878,52 +728,143 @@ export default function TransactionsScreen() {
       {/* -------- Tabs -------- */}
       <View style={styles.tabs}>
         {TABS.map((tab) => (
+          <TouchableOpacity key={tab} style={[styles.tab, selectedTab === tab && styles.activeTab]} onPress={() => { setSelectedTab(tab); setSelectedDate(null); }}>
+            <Text style={[styles.tabText, selectedTab === tab && styles.activeTabText]}>{tab}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <View style={styles.filterContainer}>
+        {/* -------- Filter Row -------- */}
+        <View style={styles.filterRow}>
           <TouchableOpacity
-            key={tab}
-            style={[styles.tab, selectedTab === tab && styles.activeTab]}
+            style={[
+              styles.filterChip,
+              filterMode === "none" && styles.filterChipActive,
+            ]}
             onPress={() => {
-              setSelectedTab(tab);
-              setSelectedDate(null);
+              setFilterMode("none");
+              setFilterAccountId(null);
+              setFilterCategory(null);
             }}
           >
             <Text
               style={[
-                styles.tabText,
-                selectedTab === tab && styles.activeTabText,
+                styles.filterChipText,
+                filterMode === "none" && styles.filterChipTextActive,
               ]}
             >
-              {tab}
+              All
             </Text>
           </TouchableOpacity>
-        ))}
+
+          <TouchableOpacity
+            style={[
+              styles.filterChip,
+              filterMode === "account" && styles.filterChipActive,
+            ]}
+            onPress={() => {
+              setFilterMode("account");
+              setFilterCategory(null);
+            }}
+          >
+            <Text
+              style={[
+                styles.filterChipText,
+                filterMode === "account" && styles.filterChipTextActive,
+              ]}
+            >
+              Account
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.filterChip,
+              filterMode === "category" && styles.filterChipActive,
+            ]}
+            onPress={() => {
+              setFilterMode("category");
+              setFilterAccountId(null);
+            }}
+          >
+            <Text
+              style={[
+                styles.filterChipText,
+                filterMode === "category" && styles.filterChipTextActive,
+              ]}
+            >
+              Category
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Sub chips */}
+        {/* #change-filter selector */}
+        {filterMode === "account" && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {accounts.map((acc) => (
+              <TouchableOpacity
+                key={acc.id}
+                style={[
+                  styles.filterChip,
+                  filterAccountId === acc.id && styles.filterChipActive,
+                ]}
+                onPress={() => setFilterAccountId(acc.id)}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    filterAccountId === acc.id && styles.filterChipTextActive,
+                  ]}
+                >
+                  {acc.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
+        {filterMode === "category" && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {ALL_CATEGORIES.map((cat, idx) => (
+              <TouchableOpacity
+                key={`cat-${idx}-${cat}`}
+                style={[
+                  styles.filterChip,
+                  filterCategory === cat && styles.filterChipActive,
+                ]}
+                onPress={() => setFilterCategory(cat)}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    filterCategory === cat && styles.filterChipTextActive,
+                  ]}
+                >
+                  {cat}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
       </View>
 
       {/* -------- Summary Row -------- */}
       <View style={styles.summaryRow}>
         <View style={[styles.summaryBox, { borderColor: "#6ee7b7" }]}>
           <Text style={styles.summaryLabel}>Income</Text>
-          <Text style={[styles.summaryValue, { color: "#bbf7d0" }]}>
-            ₹{summaryIncome.toFixed(2)}
-          </Text>
+          <Text style={[styles.summaryValue, { color: "#bbf7d0" }]}>₹{summaryIncome.toFixed(2)}</Text>
         </View>
 
         <View style={[styles.summaryBox, { borderColor: "#fb7185" }]}>
           <Text style={styles.summaryLabel}>Expense</Text>
-          <Text style={[styles.summaryValue, { color: "#fecaca" }]}>
-            ₹{summaryExpense.toFixed(2)}
-          </Text>
+          <Text style={[styles.summaryValue, { color: "#fecaca" }]}>₹{summaryExpense.toFixed(2)}</Text>
         </View>
 
         <View style={[styles.summaryBox, { borderColor: "#93c5fd" }]}>
           <Text style={styles.summaryLabel}>Total</Text>
-          <Text
-            style={[
-              styles.summaryValue,
-              { color: summaryTotal >= 0 ? "#bfdbfe" : "#fed7d7" },
-            ]}
-          >
-            ₹{summaryTotal.toFixed(2)}
-          </Text>
+          <Text style={[styles.summaryValue, { color: summaryTotal >= 0 ? "#bfdbfe" : "#fed7d7" }]}>₹{summaryTotal.toFixed(2)}</Text>
         </View>
       </View>
 
@@ -941,10 +882,7 @@ export default function TransactionsScreen() {
           {calendarMatrix.map((row, rowIndex) => (
             <View key={rowIndex} style={styles.calendarRow}>
               {row.map((day, colIndex) => {
-                if (!day)
-                  return (
-                    <View key={colIndex} style={styles.calendarCellEmpty} />
-                  );
+                if (!day) return <View key={colIndex} style={styles.calendarCellEmpty} />;
 
                 const [y, m] = month.split("-");
                 const dayStr = `${y}-${m}-${String(day).padStart(2, "0")}`;
@@ -958,10 +896,8 @@ export default function TransactionsScreen() {
                 const hasTx = dayTx.length > 0;
                 let dotColor = "#fb7185";
                 if (hasTx) {
-                  const net = dayTx.reduce(
-                    (sum, tx) => sum + (tx.amount || 0),
-                    0
-                  );
+                  // compute net excluding transfers
+                  const net = dayTx.filter((t) => t.source !== "transfer").reduce((sum, tx) => sum + (tx.amount || 0), 0);
                   if (net > 0) dotColor = "#22c55e"; // green if positive
                   else if (net < 0) dotColor = "#fb7185"; // red if negative
                   else dotColor = "#e5e7eb"; // grey-ish if exactly 0
@@ -978,11 +914,7 @@ export default function TransactionsScreen() {
                     }}
                   >
                     <Text style={styles.calendarDate}>{day}</Text>
-                    {hasTx && (
-                      <View
-                        style={[styles.dot, { backgroundColor: dotColor }]}
-                      />
-                    )}
+                    {hasTx && <View style={[styles.dot, { backgroundColor: dotColor }]} />}
                   </TouchableOpacity>
                 );
               })}
@@ -990,34 +922,20 @@ export default function TransactionsScreen() {
           ))}
         </View>
       ) : selectedTab === "Daily" ? (
-        <FlatList
-          data={groupedDaily}
-          keyExtractor={(item: any) => item.date}
-          renderItem={renderDailyGroup}
-        />
+        <FlatList data={groupedDaily} keyExtractor={(item: any) => item.date} renderItem={renderDailyGroup} />
       ) : selectedTab === "Monthly" ? (
-        <FlatList
-          data={yearMonthlyGroups}
-          keyExtractor={(item: any) => item.key}
-          renderItem={renderMonthGroup}
-        />
+        <FlatList data={yearMonthlyGroups} keyExtractor={(item: any) => item.key} renderItem={renderMonthGroup} />
       ) : (
         // Total tab – show all up to selected month, with small date at bottom
-        <FlatList
-          data={filteredTotalTx}
-          keyExtractor={(item: any) => item.id}
-          renderItem={({ item }) => <TxItem item={item} showDate />}
-        />
+        <FlatList data={filteredTotalTx} keyExtractor={(item: any) => item.id} renderItem={({ item }) => <TxItem item={item} showDate />} />
       )}
 
       {/* -------- Floating + Button -------- */}
-      {selectedTab === "Daily" ||
-      selectedTab === "Monthly" ||
-      selectedTab === "Total" ? (
+      {(selectedTab === "Daily" || selectedTab === "Monthly" || selectedTab === "Total") && (
         <TouchableOpacity style={styles.fab} onPress={openAddModal}>
           <Text style={styles.fabText}>+</Text>
         </TouchableOpacity>
-      ) : null}
+      )}
     </View>
   );
 }
@@ -1259,8 +1177,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#020617",
     padding: 20,
     paddingBottom: 16,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: "#1f2937",
     width: "100%",
@@ -1477,6 +1394,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
     textAlign: "center",
+  },
+  // #change-filter styles
+  filterContainer: {
+    marginTop: 1,
+    marginBottom: 16, // ⬅️ creates air before summary
+  },
+  filterRow: {
+    flexDirection: "row",
+    marginTop: 6,      // #change-ui-fix
+    marginBottom: 10,  // #change-ui-fix
+  },
+  filterChip: {
+    borderRadius: 999,
+    borderWidth: 1.5,     // fixed
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderColor: "#1f2937",
+    marginRight: 8,
+  },
+  filterChipActive: {
+    backgroundColor: "#1e293b",
+    borderColor: "#38bdf8",
+  },
+  filterChipText: {
+    color: "#9ca3af",
+    fontSize: 13,
+  },
+  filterChipTextActive: {
+    color: "#e0f2fe",
+    fontWeight: "600",
   },
 
 });
